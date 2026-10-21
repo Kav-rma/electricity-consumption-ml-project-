@@ -1,0 +1,144 @@
+# Central configuration for the electricity anomaly-detection project.
+# All paths are relative to the project root. Every script reads this file;
+# command-line flags only override a small number of values (see README).
+
+project:
+  name: electricity-anomaly-detection
+  model_version: "1.0.0"
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  features_dir: data/features
+  synthetic_dir: data/synthetic
+  outputs_dir: outputs
+
+random_seed: 42
+
+# ---------------------------------------------------------------------------
+# Input schema. Column names are matched case-insensitively after stripping
+# whitespace (the London file has a trailing space in its kWh header).
+# ---------------------------------------------------------------------------
+schema:
+  customer_id_candidates: ["LCLid", "customer_id", "household_id"]
+  timestamp_candidates: ["DateTime", "timestamp", "tstp"]
+  consumption_candidates: ["KWH/hh (per half hour)", "kwh", "energy(kWh/hh)"]
+  tariff_candidates: ["stdorToU", "tariff"]
+  # Timezone in which the source timestamps are recorded. "UTC" means the
+  # file uses GMT throughout the year (no DST jumps); "Europe/London" means
+  # local wall-clock time. Behavioural features always use local time.
+  source_timezone: "UTC"
+  local_timezone: "Europe/London"
+  missing_value_tokens: ["Null", "NULL", "null", "", "NaN", "nan", "NA"]
+
+# ---------------------------------------------------------------------------
+# Synthetic data (used by tests, the dashboard demo and Experiment 1).
+# ---------------------------------------------------------------------------
+synthetic:
+  n_customers: 200
+  start_date: "2013-01-01"
+  end_date: "2013-12-31"
+  missing_slot_rate: 0.003          # isolated missing half-hours
+  outage_customer_fraction: 0.10    # customers with a multi-day gap
+  late_start_fraction: 0.05         # customers whose history starts late (ineligible)
+  holiday_probability: 0.30         # chance a customer has a 1-2 week away period
+  duplicate_rate: 0.0005            # exact duplicate rows
+  conflicting_duplicate_rate: 0.0001
+  negative_value_rate: 0.0001
+  implausible_value_rate: 0.00005
+  malformed_timestamp_rows: 5
+  csv_name: synthetic_halfhourly.csv
+
+# ---------------------------------------------------------------------------
+# Real data: SmartMeter Energy Consumption Data in London Households
+# (UK Power Networks, Low Carbon London). CC BY 4.0.
+# ---------------------------------------------------------------------------
+real:
+  landing_page: "https://data.london.gov.uk/dataset/smartmeter-energy-consumption-data-in-london-households-vqm0d"
+  download_url: "https://data.london.gov.uk/download/vqm0d/3527bf39-d93e-4071-8451-df2ade1ea4f2/LCL-FullData.zip"
+  # A zip, a CSV, or a directory of CSVs (e.g. the 168-file partitioned release).
+  local_path: data/raw/LCL-FullData.zip
+  # Deterministic hash-based household sample taken while streaming the file,
+  # so the 10 GB CSV is never loaded into memory.
+  household_sample_fraction: 0.25
+  max_households: 600               # cap after the coverage filter
+  tariff_filter: "Std"              # "Std" = flat tariff; null keeps both
+  start_date: "2013-01-01"
+  end_date: "2013-12-31"
+  chunksize: 2000000
+  cache_name: real_clean_halfhourly.parquet
+
+preprocessing:
+  interval_minutes: 30
+  # 12 kWh per half hour = 24 kW sustained, above a typical 100 A single-phase
+  # domestic supply (~23 kW). Values above this are physically implausible.
+  max_kwh_per_interval: 12.0
+  min_day_coverage: 0.90            # fraction of 48 local slots needed for a valid day
+  min_window_day_coverage: 0.70     # fraction of valid days needed in each window
+
+# Chronological windows. Each window's "history" is the window before it.
+#   fit  : features on `train`, history = `train_history`
+#   tune : thresholds / dev injections on `validation`, history = `train`
+#   test : final evaluation on `test`, history = `validation`
+windows:
+  train_history: ["2013-01-01", "2013-03-31"]
+  train: ["2013-04-01", "2013-06-30"]
+  validation: ["2013-07-01", "2013-09-30"]
+  test: ["2013-10-01", "2013-12-31"]
+
+features:
+  periods:                          # local clock hours [start, end)
+    night: [0, 6]
+    morning: [6, 12]
+    afternoon: [12, 18]
+    evening: [18, 24]
+  high_day_factor: 1.5              # high day: daily kWh > 1.5 x window median
+  low_day_factor: 0.5               # low day : daily kWh < 0.5 x window median
+  log_epsilon: 0.1                  # kWh/day added before logs of daily totals
+  align_population: true            # remove window-wide (e.g. seasonal) shifts
+
+observation_model:
+  representation: relative          # "relative" (to own history) or "global"
+  n_estimators: 200
+  max_samples: 256
+  observation_contamination: 0.02   # day flagged if score > 98th pct of training days
+  aggregation: flag_rate            # flag_rate | max | mean | top3_mean
+
+customer_models:
+  kmeans:
+    k_min: 2
+    k_max: 8
+    n_init: 10
+    stability_seeds: 5
+    clip_value: 5.0                 # robust-scaled features are clipped for clustering
+    top_k_deviations: 3
+  isolation_forest:
+    n_estimators: 200
+    max_samples: auto
+  alert_rate: 0.10                  # pipeline flags: top 10% of clean validation scores
+  hybrid_weight: 0.5                # weight of the customer-profile score in the hybrid
+
+experiments:
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  # Pre-registered as 5 seeds; extended to 10 because with 5 paired runs the exact two-sided
+  # Wilcoxon test cannot reach p < 0.05 (minimum p = 0.0625). The 5-seed output is kept in
+  # outputs/experiments/real_background_5seed_preregistered/. See docs/experiment_design.md.
+  real_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  synthetic_customers: 200
+  mixed_prevalences: [0.05, 0.10]
+  scenario_prevalence: 0.10
+  magnitudes:
+    low: 0.2
+    medium: 0.5
+    high: 1.0
+  dev_magnitude: medium
+  alert_budgets: [0.05, 0.10]
+  # Scenario 9 (high but regular) is a benign control: the customer is high
+  # in both history and evaluation windows. It is NOT labelled anomalous by
+  # default and its false-alarm rate is reported separately.
+  label_high_regular_as_anomaly: false
+  onset_max_fraction: 0.33          # persistent anomalies start in the first third
+  spike_days: 2
+  intermittent_day_fraction: 0.15
+  delay_checkpoints_days: [7, 14, 28, 56, 91]
+  bootstrap_resamples: 2000

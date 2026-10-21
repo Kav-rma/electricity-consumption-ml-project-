@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Data: raw archives, processed caches and features are never committed
+data/raw/*
+data/processed/*
+data/features/*
+data/synthetic/*
+!data/**/.gitkeep
+
+# Generated outputs (re-create with the documented commands)
+outputs/pipeline/
+outputs/experiments/
+outputs/figures/
+outputs/*.log
+# Keep the generated report and its figure copies so the write-up is reviewable
+!outputs/reports/
+
+# Local settings and secrets
+.env
+config/dashboard_config.yaml
+.claude/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
